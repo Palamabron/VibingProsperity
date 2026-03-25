@@ -5,12 +5,17 @@ description = "Prosperity trading algorithm"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "google-genai>=1.68.0",
     "jsonpickle>=3.0.0",
+    "pandas>=3.0.1",
+    "prosperity4btx>=0.0.2",
+    "python-dotenv>=1.2.2",
 ]
 
 [dependency-groups]
 dev = [
     "mypy>=1.13.0",
+    "pandas-stubs>=3.0.0.260204",
     "ruff>=0.8.0",
 ]
 
@@ -25,7 +30,6 @@ select = ["E", "F", "I", "UP", "W"]
 python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
-mypy_path = "typings"
 explicit_package_bases = true
 
 [[tool.mypy.overrides]]
