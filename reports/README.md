@@ -7,6 +7,8 @@ This folder stores **structured experiment logs** for multi-agent and human-in-t
 | Path | Purpose |
 |------|---------|
 | `runs/` | Timestamped markdown files: raw tool output + sections for agent-written insights. |
+| `backtests/` | Visualizer `.log` files from `agent_cycle` (gitignored `*.log`); see `backtests/README.md`. |
+| `official/` | **Manual** exports of submission JSON (`activitiesLog`) from the game site; see `official/README.md`. |
 | `autoresearch_state.json` | Written by `autoresearch.py`: best profit + last iteration (optional). |
 | `INDEX.md` | **Regenerated** by `uv run python scripts/agent_cycle.py` — lists `runs/*.md` newest first with `total_profit` from YAML front matter. |
 | `TEMPLATE.md` | Copy this if you create a report by hand instead of using `scripts/agent_cycle.py`. |
@@ -20,7 +22,7 @@ This folder stores **structured experiment logs** for multi-agent and human-in-t
 1. **Before** changing `algorithm.py`, read the latest entries in `INDEX.md` and open the most recent `runs/*.md` files to see what was tried and what failed or improved.
 2. **After** editing the trader, run `uv run scripts/agent_cycle.py` (or follow `AGENT_FLOW.md`) to append a new report with fresh metrics.
 3. **Fill in** the sections *Insights*, *Hypotheses for next iteration*, and *Algorithm changes (summary)* in the new report (or in chat, then paste into the file).
-4. Treat **total profit** from the backtest block as the primary score; compare to the previous run’s total on the same round/days.
+4. Treat **total profit** from the backtest block as the primary local score; compare to the previous run’s total on the same round/days. Use **Parsed backtest metrics** for per-day/per-product context; use `scripts/analyze_official_log.py` when you have an official JSON export.
 
 ## Do not commit secrets
 

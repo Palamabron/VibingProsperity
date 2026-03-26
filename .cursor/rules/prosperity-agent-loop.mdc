@@ -9,7 +9,7 @@ When iterating on this repo:
 
 1. Read `program.md`, `AGENT_FLOW.md`, and the latest entries in `reports/INDEX.md` (then open 1–2 newest files under `reports/runs/`).
 2. Prefer **English** for all new narrative in `reports/runs/*.md` (*Insights*, *Hypotheses*, *Algorithm changes summary*).
-3. After changing `algorithm.py` (or `data_analytics.py`), run `uv run python scripts/agent_cycle.py` to capture analytics + backtest and refresh `reports/INDEX.md`. Compare **total_profit** in YAML front matter to the previous run on the same round.
+3. After changing `algorithm.py` (or `data_analytics.py`), run `uv run python scripts/agent_cycle.py` to capture analytics + backtest, refresh `reports/INDEX.md`, save a visualizer log under `reports/backtests/`, and embed **Parsed backtest metrics** in the new report. Compare **total_profit** in YAML front matter to the **same** round and tuning: defaults are **`--match-trades worse`** and auto **`--data ./data`** when **`data/round0/`** is populated (see `program.md`). Optional: analyze saved official submission JSON with `uv run python scripts/analyze_official_log.py` (see `reports/official/README.md`; no API for automated upload to prosperity.imc.com).
 4. For external LLM chats (recommended: **Google Gemini Pro** or strongest available Gemini tier), paste compact excerpts: latest report metrics, relevant `algorithm.py` constants, and the new backtest summary—avoid sending full git history unless needed.
 5. Never add a **hard dependency** on `PROSPERITY4BT_ROUND` / `PROSPERITY4BT_DAY` in `algorithm.py` (backtest-only env vars).
 6. Submission to IMC is typically **`algorithm.py` only**; `datamodel.py` is local for backtests.

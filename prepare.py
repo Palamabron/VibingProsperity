@@ -16,8 +16,8 @@ def main() -> None:
     print("VibingProsperity — prepare")
     print(f"  Project root: {ROOT}")
     if DATA.is_dir():
-        csvs = sorted(DATA.glob("*.csv"))
-        print(f"  data/*.csv: {len(csvs)} file(s)")
+        csvs = sorted(DATA.rglob("*.csv"))
+        print(f"  data/**/*.csv: {len(csvs)} file(s)")
     else:
         print(f"  warning: {DATA} missing")
     algo = ROOT / "algorithm.py"
