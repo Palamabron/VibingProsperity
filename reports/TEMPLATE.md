@@ -1,8 +1,8 @@
-# Experiment report — YYYY-MM-DD HH:MM (local)
+# Experiment report — YYYY-MM-DD HH:MM (live platform)
 
 ## Metadata
 
-- **Round / days:** (e.g. round 0, days -2 and -1)
+- **Submission ID / status:** (from `agent_cycle` YAML or `submit_live` output)
 - **Git commit (optional):** `git rev-parse --short HEAD`
 
 ## Raw: data analytics (`uv run data_analytics.py`)
@@ -11,7 +11,7 @@
 (paste output here)
 ```
 
-## Raw: backtest (`uv run backtest.py --merge-pnl --no-progress`)
+## Raw: submit_live result (`uv run python scripts/submit_live.py`)
 
 ```text
 (paste output here)
@@ -19,8 +19,8 @@
 
 ## Metrics (extracted)
 
-- **Total profit (all days in run):**
-- **Per day / per product (if needed):**
+- **Total profit:**
+- **Per product (if parsed from zip log):**
 
 ## Insights
 

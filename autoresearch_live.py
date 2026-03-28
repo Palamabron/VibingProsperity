@@ -1,46 +1,51 @@
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
 import shutil
 import sys
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
+import tyro
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from loguru import logger
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 
 sys.path.insert(0, str(ROOT / "scripts"))
+from report_utils import format_front_matter_yaml, rebuild_experiment_index  # noqa: E402
 from submit_live import submit_and_wait  # noqa: E402
 
-ALGO_PATH   = ROOT / "algorithm.py"
+ALGO_PATH = ROOT / "algorithm.py"
 BACKUP_PATH = ROOT / "algorithm_best.py"
-STATE_PATH  = ROOT / "reports" / "autoresearch_live_state.json"
-RUNS_DIR    = ROOT / "reports" / "runs"
-INDEX_PATH  = ROOT / "reports" / "INDEX.md"
+STATE_PATH = ROOT / "reports" / "autoresearch_live_state.json"
+REPORTS_DIR = ROOT / "reports"
+RUNS_DIR = REPORTS_DIR / "runs"
+INDEX_PATH = REPORTS_DIR / "INDEX.md"
 
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
-GEMINI_MODEL         = os.getenv("GEMINI_MODEL", "models/gemini-2.5-pro")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.5-pro")
 LOG_CHARS_FOR_GEMINI = 8000
 
 
-def _load_state() -> dict:
+def _load_state() -> dict[str, Any]:
     if STATE_PATH.exists():
         try:
-            return json.loads(STATE_PATH.read_text())
+            return cast(dict[str, Any], json.loads(STATE_PATH.read_text()))
         except Exception:
             pass
     return {"best_profit": None, "iteration": 0}
 
 
-def _save_state(state: dict) -> None:
+def _save_state(state: dict[str, Any]) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(json.dumps(state, indent=2))
 
@@ -57,32 +62,27 @@ def _gemini_edit(algo_code: str, log_text: str | None, profit: int | None, itera
 
     profit_str = f"{profit:+,}" if profit is not None else "unknown"
 
-    prompt = f"""You are an expert algorithmic trader improving a market-making bot for IMC Prosperity 4.
-
-## Current algorithm (iteration {iteration})
-
-```python
-{algo_code}
-```
-
-## Live simulation result
-Total PnL: {profit_str} SeaShells{log_snippet}
-
-## Task
-
-Analyze the log carefully. Identify what is working and what is not.
-Then produce an improved version of the algorithm.
-
-Rules:
-- Output ONLY the complete improved Python file, no explanation, no markdown fences
-- Keep the Trader class and run() method signature unchanged
-- Do not add external dependencies
-- Make targeted, specific improvements based on the log
-- If the log shows inventory buildup, fix position management
-- If spread is too wide/narrow, adjust quoting logic
-- If a product is losing money, reduce or eliminate its activity
-
-Output the complete Python file now:"""
+    prompt = (
+        "You are an expert algorithmic trader improving a market-making bot for IMC Prosperity 4.\n"
+        f"\n## Current algorithm (iteration {iteration})\n"
+        "```python\n"
+        f"{algo_code}\n"
+        "```\n"
+        "\n## Live simulation result\n"
+        f"Total PnL: {profit_str} SeaShells{log_snippet}\n"
+        "\n## Task\n"
+        "\nAnalyze the log carefully. Identify what is working and what is not.\n"
+        "Then produce an improved version of the algorithm.\n"
+        "\nRules:\n"
+        "- Output ONLY the complete improved Python file, no explanation, no markdown fences\n"
+        "- Keep the Trader class and run() method signature unchanged\n"
+        "- Do not add external dependencies\n"
+        "- Make targeted, specific improvements based on the log\n"
+        "- If the log shows inventory buildup, fix position management\n"
+        "- If spread is too wide/narrow, adjust quoting logic\n"
+        "- If a product is losing money, reduce or eliminate its activity\n"
+        "\nOutput the complete Python file now:"
+    )
 
     response = client.models.generate_content(
         model=GEMINI_MODEL,
@@ -93,12 +93,22 @@ Output the complete Python file now:"""
         ),
     )
 
-    text = response.text
+    text: str | None = response.text
     if text is None:
         try:
-            text = response.candidates[0].content.parts[0].text
+            cands = response.candidates
+            if not cands:
+                raise RuntimeError(f"Gemini returned no text. Response: {response}")
+            content = cands[0].content
+            if content is None or not content.parts:
+                raise RuntimeError(f"Gemini returned no text. Response: {response}")
+            text = content.parts[0].text
+        except RuntimeError:
+            raise
         except Exception:
-            raise RuntimeError(f"Gemini returned no text. Response: {response}")
+            raise RuntimeError(f"Gemini returned no text. Response: {response}") from None
+    if text is None:
+        raise RuntimeError(f"Gemini returned no text. Response: {response}")
 
     code = text.strip()
     code = re.sub(r"^```python\s*", "", code)
@@ -108,31 +118,35 @@ Output the complete Python file now:"""
 
 
 def _write_report(ts: str, result: dict, iteration: int, improved: bool) -> Path:
-    profit   = result.get("total_profit")
-    sub_id   = result.get("submission_id", "n/a")
-    status   = result.get("status", "unknown")
+    profit = result.get("total_profit")
+    sub_id = result.get("submission_id", "n/a")
+    status = result.get("status", "unknown")
     per_prod = result.get("per_product", {})
     log_path = result.get("log_path")
-    error    = result.get("error")
+    error = result.get("error")
 
-    header = (
-        f"total_profit: {profit}\n"
-        f"submission_id: {sub_id}\n"
-        f"status: {status}\n"
-        f"iteration: {iteration}\n"
-        f"improved: {improved}\n"
-        f"timestamp: {ts}\n"
-    )
+    fm: dict[str, Any] = {
+        "experiment_id": ts,
+        "source": "live",
+        "submission_id": str(sub_id),
+        "status": str(status),
+        "timestamp": ts,
+        "round": None,
+        "iteration": iteration,
+        "improved": improved,
+    }
+    if profit is not None:
+        fm["total_profit"] = int(profit)
+    else:
+        fm["total_profit"] = None
 
     lines = [
+        format_front_matter_yaml(fm).rstrip(),
+        "",
         f"# Live Experiment — iteration {iteration} — {ts}",
         "",
-        "```",
-        header.strip(),
-        "```",
-        "",
         f"**Status:** {status}  ",
-        f"**Improved:** {'✅ YES' if improved else '❌ no'}  ",
+        f"**Improved:** {'yes' if improved else 'no'}  ",
         "",
         "## PnL",
         "",
@@ -143,10 +157,14 @@ def _write_report(ts: str, result: dict, iteration: int, improved: bool) -> Path
         lines.append("")
 
     if per_prod:
-        lines += [
-            "| Product | PnL |",
-            "|---------|-----|",
-        ] + [f"| {p} | {v:+,.0f} |" for p, v in sorted(per_prod.items())] + [""]
+        lines += (
+            [
+                "| Product | PnL |",
+                "|---------|-----|",
+            ]
+            + [f"| {p} | {v:+,.0f} |" for p, v in sorted(per_prod.items())]
+            + [""]
+        )
 
     if error:
         lines += ["## Error", "", f"```\n{error}\n```", ""]
@@ -159,52 +177,40 @@ def _write_report(ts: str, result: dict, iteration: int, improved: bool) -> Path
     return path
 
 
-def _update_index(report: Path, profit: int | None, ts: str, iteration: int, improved: bool) -> None:
-    profit_str   = f"{profit:+,}" if profit is not None else "N/A"
-    improved_str = "✅" if improved else "—"
-    entry        = f"| [{ts}]({report.relative_to(ROOT)}) | {profit_str} | {iteration} | {improved_str} | live |\n"
-    if INDEX_PATH.exists():
-        existing = INDEX_PATH.read_text(encoding="utf-8")
-    else:
-        existing = (
-            "# Experiment Index\n\n"
-            "| Run | Profit (SeaShells) | Iteration | Improved | Source |\n"
-            "|-----|-------------------|-----------|----------|--------|\n"
-        )
-    lines  = existing.splitlines(keepends=True)
-    insert = next((i for i, l in enumerate(lines) if l.startswith("|---")), len(lines)) + 1
-    lines.insert(insert, entry)
-    INDEX_PATH.write_text("".join(lines), encoding="utf-8")
-
-
 def run(iterations: int | None = None, dry_run: bool = False) -> None:
     state = _load_state()
-    print(f"\n{'='*60}")
-    print(f"  AUTORESEARCH LIVE — starting at iteration {state['iteration']}")
-    print(f"  best_profit so far: {state['best_profit']}")
-    print(f"{'='*60}\n")
+    logger.info("{}", "=" * 60)
+    logger.info(
+        "AUTORESEARCH LIVE — starting at iteration {} | best_profit so far: {}",
+        state["iteration"],
+        state["best_profit"],
+    )
+    logger.info("{}", "=" * 60)
 
     i = 0
     while iterations is None or i < iterations:
         state["iteration"] += 1
         iteration = state["iteration"]
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
-        print(f"\n{'─'*60}")
-        print(f"  Iteration {iteration}  —  {ts}")
-        print(f"{'─'*60}")
+        logger.info("{} Iteration {} — {}", "─" * 60, iteration, ts)
 
         if dry_run:
-            print("[autoresearch_live] dry-run: skipping submission")
+            logger.info("[autoresearch_live] dry-run: skipping submission")
             result = {
-                "status": "success", "total_profit": state["best_profit"],
-                "per_product": {}, "log_text": None, "log_path": None,
-                "submission_id": "dry-run", "timestamp": ts, "error": None,
+                "status": "success",
+                "total_profit": state["best_profit"],
+                "per_product": {},
+                "log_text": None,
+                "log_path": None,
+                "submission_id": "dry-run",
+                "timestamp": ts,
+                "error": None,
             }
         else:
             result = submit_and_wait(ALGO_PATH)
 
-        profit   = result.get("total_profit")
+        profit = result.get("total_profit")
         log_text = result.get("log_text")
 
         improved = False
@@ -213,48 +219,68 @@ def run(iterations: int | None = None, dry_run: bool = False) -> None:
                 improved = True
                 state["best_profit"] = profit
                 shutil.copy2(ALGO_PATH, BACKUP_PATH)
-                print(f"[autoresearch_live] ✅ NEW BEST: {profit:+,} → saved to algorithm_best.py")
+                logger.info(
+                    "[autoresearch_live] NEW BEST: {:+,} — saved to algorithm_best.py",
+                    profit,
+                )
             else:
-                print(f"[autoresearch_live] profit {profit:+,} ≤ best {state['best_profit']:+,} — reverting")
+                best = state["best_profit"]
+                logger.info(
+                    "[autoresearch_live] profit {:+,} <= best {:+,} — reverting",
+                    profit,
+                    best,
+                )
                 if BACKUP_PATH.exists():
                     shutil.copy2(BACKUP_PATH, ALGO_PATH)
         elif result["status"] != "success":
-            print(f"[autoresearch_live] submission failed: {result.get('error')} — reverting")
+            logger.warning(
+                "[autoresearch_live] submission failed: {} — reverting",
+                result.get("error"),
+            )
             if BACKUP_PATH.exists():
                 shutil.copy2(BACKUP_PATH, ALGO_PATH)
 
         report = _write_report(ts, result, iteration, improved)
-        _update_index(report, profit, ts, iteration, improved)
-        print(f"[autoresearch_live] report → {report.relative_to(ROOT)}")
+        rebuild_experiment_index(runs_dir=RUNS_DIR, index_path=INDEX_PATH, reports_root=REPORTS_DIR)
+        logger.info("[autoresearch_live] report → {}", report.relative_to(ROOT))
 
         _save_state(state)
 
         algo_code = ALGO_PATH.read_text(encoding="utf-8")
-        print("[autoresearch_live] asking Gemini to improve algorithm …")
+        logger.info("[autoresearch_live] asking Gemini to improve algorithm …")
         try:
             new_code = _gemini_edit(algo_code, log_text, profit, iteration)
             ALGO_PATH.write_text(new_code, encoding="utf-8")
-            print(f"[autoresearch_live] algorithm.py updated ({len(new_code)} chars)")
+            logger.info("[autoresearch_live] algorithm.py updated ({} chars)", len(new_code))
         except Exception as exc:
-            print(f"[autoresearch_live] Gemini error: {exc}", file=sys.stderr)
-            print("[autoresearch_live] keeping current algorithm")
+            logger.exception("[autoresearch_live] Gemini error: {}", exc)
+            logger.info("[autoresearch_live] keeping current algorithm")
 
         i += 1
 
-    print(f"\n{'='*60}")
-    print(f"  DONE — best profit: {state['best_profit']}")
-    print(f"{'='*60}\n")
+    logger.info("{}", "=" * 60)
+    logger.info("DONE — best profit: {}", state["best_profit"])
+    logger.info("{}", "=" * 60)
+
+
+@dataclass
+class AutoresearchLiveArgs:
+    """Agentic live trading loop for IMC Prosperity 4."""
+
+    iterations: int | None = None
+    """Stop after this many iterations (default: run until interrupted)."""
+
+    dry_run: bool = False
+    """Skip live submission (mock result)."""
+
+    reset_state: bool = False
+    """Delete saved state before starting."""
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Agentic live trading loop for IMC Prosperity 4")
-    parser.add_argument("--iterations",  type=int, default=None)
-    parser.add_argument("--dry-run",     action="store_true")
-    parser.add_argument("--reset-state", action="store_true")
-    args = parser.parse_args()
-
+    args = tyro.cli(AutoresearchLiveArgs)
     if args.reset_state:
         STATE_PATH.unlink(missing_ok=True)
-        print("State reset.")
+        logger.info("State reset.")
 
     run(iterations=args.iterations, dry_run=args.dry_run)

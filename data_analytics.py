@@ -33,7 +33,9 @@ def _micro_price_vectorized(g: pd.DataFrame) -> pd.Series:
     return out.where(den > 0)
 
 
-def _fair_value_series_for_taker_stats(product: str, micro: pd.Series, timestamps: pd.Series) -> list[float]:
+def _fair_value_series_for_taker_stats(
+    product: str, micro: pd.Series, timestamps: pd.Series
+) -> list[float]:
     """
     Row-aligned fair value proxy: fixed EMERALDS fair, EMA(micro) for TOMATOES in timestamp order.
     Returns list same length as micro (NaNs where micro is NaN / uninitialized).
@@ -98,7 +100,9 @@ def analyze_prices(df: pd.DataFrame, source: str) -> dict[str, Any]:
                 if len(ch) > 2 and float(ch.std(ddof=0) or 0) > 1e-9:
                     v = ch.to_numpy()
                     c0, c1 = v[:-1], v[1:]
-                    block["mid_price_delta_autocorr_lag1"] = float(pd.Series(c0).corr(pd.Series(c1)))
+                    block["mid_price_delta_autocorr_lag1"] = float(
+                        pd.Series(c0).corr(pd.Series(c1))
+                    )
                 # Realized vol: std of simple returns (ignore zeros in denom).
                 ret = mp.pct_change().dropna()
                 if len(ret) > 1:
@@ -118,9 +122,13 @@ def analyze_prices(df: pd.DataFrame, source: str) -> dict[str, Any]:
             if "mid_price" in g.columns:
                 mp = g["mid_price"].astype(float)
                 half_spread = sp / 2.0
-                block["half_spread_over_mid_bps"] = float((half_spread / mp.replace(0, float("nan"))).mean() * 10_000.0)
+                block["half_spread_over_mid_bps"] = float(
+                    (half_spread / mp.replace(0, float("nan"))).mean() * 10_000.0
+                )
 
-        if all(c in g.columns for c in ("bid_price_1", "ask_price_1", "bid_volume_1", "ask_volume_1")):
+        if all(
+            c in g.columns for c in ("bid_price_1", "ask_price_1", "bid_volume_1", "ask_volume_1")
+        ):
             micro = _micro_price_vectorized(g)
             block["micro_vs_mid"] = {}
             if "mid_price" in g.columns:
@@ -143,7 +151,9 @@ def analyze_prices(df: pd.DataFrame, source: str) -> dict[str, Any]:
                 n = int(valid.sum())
                 block["taker_opportunity_rate_vs_ref"] = {
                     "threshold": REF_TAKER_THRESHOLD,
-                    "fair_proxy": "EMA(micro)" if product == "TOMATOES" else f"fixed_{REF_EMERALDS_FAIR}",
+                    "fair_proxy": "EMA(micro)"
+                    if product == "TOMATOES"
+                    else f"fixed_{REF_EMERALDS_FAIR}",
                     "pct_ticks_ask_below_fair_minus_thr": float(buy_take.sum() / n) if n else 0.0,
                     "pct_ticks_bid_above_fair_plus_thr": float(sell_take.sum() / n) if n else 0.0,
                 }
@@ -194,8 +204,10 @@ def analyze_trades(
 
     out["by_symbol"] = per_symbol
 
-    if prices_df is not None and "timestamp" in df.columns and all(
-        c in prices_df.columns for c in ("timestamp", "product", "mid_price")
+    if (
+        prices_df is not None
+        and "timestamp" in df.columns
+        and all(c in prices_df.columns for c in ("timestamp", "product", "mid_price"))
     ):
         p = prices_df[["timestamp", "product", "mid_price"]].copy()
         p = p.rename(columns={"product": "symbol"})
@@ -203,7 +215,11 @@ def analyze_trades(
         merged["_mid"] = merged["mid_price"].astype(float)
         valid = merged["_mid"].notna() & merged["_px"].notna() & (merged["_mid"].abs() > 1e-9)
         if valid.any():
-            slip_bps = (merged.loc[valid, "_px"] - merged.loc[valid, "_mid"]) / merged.loc[valid, "_mid"] * 10_000.0
+            slip_bps = (
+                (merged.loc[valid, "_px"] - merged.loc[valid, "_mid"])
+                / merged.loc[valid, "_mid"]
+                * 10_000.0
+            )
             out["trade_vs_mid_at_tick"] = {
                 "matched_trades": int(valid.sum()),
                 "unmatched_trades": int((~valid).sum()),
@@ -253,7 +269,8 @@ def _algorithm_hints(analyses: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     rollup = _aggregate_price_insights(analyses)
     lines.append(
-        f"Reference knobs: TAKER_THRESHOLD={REF_TAKER_THRESHOLD}, EMERALDS_FAIR={REF_EMERALDS_FAIR}, "
+        "Reference knobs: "
+        f"TAKER_THRESHOLD={REF_TAKER_THRESHOLD}, EMERALDS_FAIR={REF_EMERALDS_FAIR}, "
         f"TOMATOES_EMA_ALPHA={REF_TOMATOES_EMA_ALPHA}"
     )
     for key in sorted(rollup.keys()):
@@ -261,23 +278,24 @@ def _algorithm_hints(analyses: list[dict[str, Any]]) -> list[str]:
         lines.append(f"  {key}: mean={r['mean']:.6g} over {r['n_files']} price file(s)")
     lines.append("Interpretation:")
     lines.append(
-        "  • taker_opportunity_rate: high buy/sell % → lowering TAKER_THRESHOLD may increase crosses; "
-        "very low % → taker leg rarely fires; rely on maker or widen perception of edge."
+        "  • taker_opportunity_rate: high buy/sell % → lowering TAKER_THRESHOLD may increase "
+        "crosses; very low % → taker leg rarely fires; rely on maker or widen perception of edge."
     )
     lines.append(
         "  • mid_price_delta_autocorr_lag1: negative → choppy/mean-reverting microstructure; "
         "positive → short-term momentum in tick changes."
     )
     lines.append(
-        "  • micro_vs_mid mean_abs: large vs TAKER_THRESHOLD → fair_value from micro differs from mid; "
-        "algorithm uses micro for EMA input, not mid."
+        "  • micro_vs_mid mean_abs: large vs TAKER_THRESHOLD → fair_value from micro differs "
+        "from mid; algorithm uses micro for EMA input, not mid."
     )
     lines.append(
         "  • l1_book_imbalance mean: positive → more bid size at touch on average (pressure up); "
         "inventory skew in algorithm pushes quotes the opposite way when long/short."
     )
     lines.append(
-        "  • trade_vs_mid: large |bps| → prints away from mid; maker/taker fills may differ from mid PnL marks."
+        "  • trade_vs_mid: large |bps| → prints away from mid; maker/taker fills may differ "
+        "from mid PnL marks."
     )
     return lines
 

@@ -26,7 +26,7 @@ def main() -> None:
     print("Next:")
     print("  uv sync")
     print("  uv run data_analytics.py          # optional: inspect CSV stats")
-    print("  uv run python scripts/agent_cycle.py   # one backtest + report")
+    print("  uv run python scripts/agent_cycle.py   # analytics + platform eval + report")
     print("  uv run autoresearch.py --help     # optional: overnight Gemini loop")
 
 
