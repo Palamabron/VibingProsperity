@@ -208,3 +208,6 @@ __marimo__/
 
 reports/backtests/
 reports/runs/
+reports/submissions_live/
+reports/*_state.json
+

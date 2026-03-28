@@ -2,6 +2,7 @@ import math
 from typing import cast
 
 import jsonpickle
+
 from datamodel import Order, TradingState
 
 
@@ -11,12 +12,12 @@ class TradingConstants:
     EMERALDS_FIXED_FAIR = 10000
     SERIALIZATION_THRESHOLD = 45000
     # Changed TAKER_THRESHOLD from 1.0 to 0.5.
-    # Data analytics showed very low taker opportunity rates, suggesting the previous threshold (1.0)
-    # was too conservative, missing profitable taker trades on small price deviations.
+    # Data analytics showed very low taker opportunity rates; the old threshold (1.0) was too
+    # conservative, missing profitable taker trades on small price deviations.
     TAKER_THRESHOLD = 0.5
     DEFAULT_LIMIT = 20
     # Initial offset from fair_value for EMERALDS maker orders
-    # A larger value means bids are placed lower and asks higher, widening the strategy's own spread.
+    # A larger value widens our spread: bids lower, asks higher vs fair.
     EMERALDS_MAKER_SPREAD_OFFSET = 2
 
 
@@ -127,14 +128,14 @@ class Trader:
 
             # Taker strategy: try to take existing liquidity if profitable
             for price, vol in sell_book:  # Iterate through asks (sell offers)
-                # If ask price is below our fair value minus a threshold, it's a good buy opportunity
+                # Ask below fair minus threshold: good buy opportunity
                 if price < fair_value - TradingConstants.TAKER_THRESHOLD and max_buy_vol > 0:
                     quantity = min(max_buy_vol, abs(vol))
                     orders.append(Order(product, price, quantity))
                     max_buy_vol -= quantity
 
             for price, vol in buy_book:  # Iterate through bids (buy offers)
-                # If bid price is above our fair value plus a threshold, it's a good sell opportunity
+                # Bid above fair plus threshold: good sell opportunity
                 if price > fair_value + TradingConstants.TAKER_THRESHOLD and max_sell_vol > 0:
                     quantity = min(max_sell_vol, vol)
                     orders.append(Order(product, price, -quantity))
@@ -168,7 +169,7 @@ class Trader:
                 base_bid = min(math.floor(adjusted_fair_bid), best_bid + bid_cap_modifier)
                 base_ask = max(math.ceil(adjusted_fair_ask), best_ask - ask_floor_modifier)
 
-                # Custom, more aggressive layering for EMERALDS to maximize fills at competitive prices.
+                # Aggressive EMERALDS layering for fills near competitive prices.
                 if product == "EMERALDS":
                     if max_buy_vol > 0:
                         # Place a significant portion at the most competitive price point

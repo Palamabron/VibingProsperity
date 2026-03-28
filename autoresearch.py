@@ -1,20 +1,20 @@
 """
-Overnight-style loop: Gemini proposes a full `algorithm.py`, backtest runs, keep-if-better.
+Overnight-style loop: Gemini proposes a full `algorithm.py`, live platform evaluation runs,
+keep-if-better.
 
-Like autoresearch `train.py` iterations, but the metric is **backtest total profit** (not val_bpb).
+The metric is **total_profit** from `scripts/agent_cycle.py` (upload via `scripts/submit_live.py`).
 
 Requires `GOOGLE_API_KEY` in `.env` (see `.env.example`).
 Optional: `GEMINI_MODEL` (default: gemini-2.0-flash).
 
 Usage:
-  uv run autoresearch.py --iterations 5 --round 0
+  uv run autoresearch.py --iterations 5
   uv run autoresearch.py --dry-run    # no API; run one agent_cycle only
-  uv run autoresearch.py --reset-state # drop saved best (after changing --match-trades, etc.)
+  uv run autoresearch.py --reset-state # drop saved best
 """
 
 from __future__ import annotations
 
-import argparse
 import ast
 import json
 import os
@@ -23,12 +23,19 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
+import tyro
 from dotenv import load_dotenv
 from google import genai
+from loguru import logger
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from report_utils import latest_experiment_total_profit  # noqa: E402
+
 REPORTS = ROOT / "reports"
 RUNS = REPORTS / "runs"
 STATE_PATH = REPORTS / "autoresearch_state.json"
@@ -86,46 +93,42 @@ def _validate_python(code: str) -> bool:
     return True
 
 
-def _run_agent_cycle(
-    round_n: int,
-    *,
-    match_trades: str,
-    no_auto_data: bool = False,
-    original_timestamps: bool = False,
-) -> int:
+def _run_agent_cycle() -> int:
     cmd = [
         "uv",
         "run",
         "python",
         "scripts/agent_cycle.py",
-        "--round",
-        str(round_n),
-        "--match-trades",
-        match_trades,
     ]
-    if no_auto_data:
-        cmd.append("--no-auto-data")
-    if original_timestamps:
-        cmd.append("--original-timestamps")
-    return subprocess.call(cmd, cwd=ROOT)
+    timeout = _agent_cycle_script_timeout()
+    try:
+        r = subprocess.run(cmd, cwd=ROOT, timeout=timeout)
+        return r.returncode
+    except subprocess.TimeoutExpired:
+        logger.error(
+            "agent_cycle exceeded timeout ({}s); set AGENT_CYCLE_SCRIPT_TIMEOUT or increase it.",
+            timeout,
+        )
+        return 124
+
+
+def _agent_cycle_script_timeout() -> float | None:
+    raw = os.environ.get("AGENT_CYCLE_SCRIPT_TIMEOUT", "7200").strip()
+    if raw == "" or raw.lower() in ("none", "inf"):
+        return None
+    return float(raw)
 
 
 def _latest_profit() -> int | None:
     if not RUNS.is_dir():
         return None
-    files = sorted(RUNS.glob("*_experiment.md"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not files:
-        return None
-    raw = files[0].read_text(encoding="utf-8")
-    m = re.search(r"^total_profit:\s*(\d+)\s*$", raw, re.MULTILINE)
-    return int(m.group(1)) if m else None
+    profit, _ = latest_experiment_total_profit(RUNS)
+    return profit
 
 
 def _save_state(
     best: int | None,
     iteration: int,
-    *,
-    match_trades: str,
 ) -> None:
     REPORTS.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(
@@ -133,7 +136,6 @@ def _save_state(
             {
                 "best_profit": best,
                 "last_iteration": iteration,
-                "match_trades": match_trades,
             },
             indent=2,
         )
@@ -142,16 +144,14 @@ def _save_state(
     )
 
 
-def _load_state() -> tuple[int | None, int, str | None]:
+def _load_state() -> tuple[int | None, int]:
     if not STATE_PATH.is_file():
-        return None, 0, None
+        return None, 0
     try:
         data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        mt = data.get("match_trades")
-        mt_s = str(mt) if mt is not None else None
-        return data.get("best_profit"), int(data.get("last_iteration", 0)), mt_s
+        return data.get("best_profit"), int(data.get("last_iteration", 0))
     except (OSError, json.JSONDecodeError, ValueError, TypeError):
-        return None, 0, None
+        return None, 0
 
 
 def _gemini_edit(algorithm_src: str, model: str) -> str:
@@ -170,8 +170,8 @@ def _gemini_edit(algorithm_src: str, model: str) -> str:
         f"{report_ex}\n\n"
         "## Current algorithm.py\n"
         f"```python\n{algorithm_src}\n```\n\n"
-        "Improve total backtest profit under the SAME backtest settings as in the "
-        "latest report (match_trades, data). Output valid, runnable Python only: "
+        "Improve total platform profit under the SAME evaluation as in the "
+        "latest report. Output valid, runnable Python only: "
         "the full new algorithm.py in one ```python``` block. No typos or "
         "undefined names—run() must not raise."
     )
@@ -189,156 +189,105 @@ def _gemini_edit(algorithm_src: str, model: str) -> str:
     return code
 
 
+@dataclass
+class AutoresearchArgs:
+    """Autoresearch-style loop (Gemini + live platform evaluation)."""
+
+    iterations: int = 10
+    """Max attempts (default: 10)."""
+
+    model: str | None = None
+    """Gemini model id (default: env GEMINI_MODEL or gemini-2.0-flash)."""
+
+    sleep: float = 2.0
+    """Seconds between iterations (rate limits / API courtesy)."""
+
+    dry_run: bool = False
+    """Do not call Gemini; run one agent_cycle and exit."""
+
+    no_baseline: bool = False
+    """Skip initial agent_cycle used to measure baseline profit (not recommended)."""
+
+    reset_state: bool = False
+    """Delete reports/autoresearch_state.json before running (fresh best / baseline)."""
+
+
 def main() -> int:
     load_dotenv(ROOT / ".env")
-    parser = argparse.ArgumentParser(description="Autoresearch-style loop (Gemini + backtest).")
-    parser.add_argument("--iterations", type=int, default=10, help="Max attempts (default: 10)")
-    parser.add_argument("--round", type=int, default=0, help="Backtest round (default: 0)")
-    parser.add_argument(
-        "--model",
-        default=None,
-        help="Gemini model id (default: env GEMINI_MODEL or gemini-2.0-flash)",
-    )
-    parser.add_argument(
-        "--sleep",
-        type=float,
-        default=2.0,
-        help="Seconds between iterations (rate limits / API courtesy)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Do not call Gemini; run one agent_cycle and exit",
-    )
-    parser.add_argument(
-        "--no-baseline",
-        action="store_true",
-        help="Skip initial agent_cycle used to measure baseline profit (not recommended)",
-    )
-    parser.add_argument(
-        "--match-trades",
-        choices=("all", "worse", "none"),
-        default="worse",
-        help="Forward to agent_cycle / prosperity4btx (default: worse; must match stored best).",
-    )
-    parser.add_argument(
-        "--no-auto-data",
-        action="store_true",
-        help="Forward --no-auto-data to agent_cycle.",
-    )
-    parser.add_argument(
-        "--original-timestamps",
-        action="store_true",
-        help="Forward --original-timestamps to agent_cycle (may break .log on 0.0.2).",
-    )
-    parser.add_argument(
-        "--reset-state",
-        action="store_true",
-        help="Delete reports/autoresearch_state.json before running (fresh best / baseline).",
-    )
-    args = parser.parse_args()
+    args = tyro.cli(AutoresearchArgs)
 
     if args.reset_state and STATE_PATH.is_file():
         STATE_PATH.unlink()
-        print(f"Cleared {STATE_PATH.relative_to(ROOT)}")
+        logger.info("Cleared {}", STATE_PATH.relative_to(ROOT))
 
     model = args.model or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
     if args.dry_run:
-        code = _run_agent_cycle(
-            args.round,
-            match_trades=args.match_trades,
-            no_auto_data=args.no_auto_data,
-            original_timestamps=args.original_timestamps,
-        )
-        print(f"agent_cycle exit code: {code}")
-        print(f"latest total_profit: {_latest_profit()}")
+        code = _run_agent_cycle()
+        logger.info("agent_cycle exit code: {}", code)
+        logger.info("latest total_profit: {}", _latest_profit())
         return code
 
     algo_path = ROOT / "algorithm.py"
     if not algo_path.is_file():
-        print("algorithm.py not found", file=sys.stderr)
+        logger.error("algorithm.py not found")
         return 1
 
     if not BEST_COPY.is_file():
         shutil.copy2(algo_path, BEST_COPY)
-        print(f"Saved baseline copy to {BEST_COPY.name}")
+        logger.info("Saved baseline copy to {}", BEST_COPY.name)
 
-    best_profit, _, stored_mt = _load_state()
-    if stored_mt is not None and stored_mt != args.match_trades:
-        print(
-            f"Ignoring stored best: state match_trades={stored_mt!r} "
-            f"≠ this run {args.match_trades!r} (incomparable scores).",
-            file=sys.stderr,
-        )
-        best_profit = None
-    elif (
-        stored_mt is None
-        and STATE_PATH.is_file()
-        and best_profit is not None
-    ):
-        print(
-            "Ignoring stored best: autoresearch_state.json predates match_trades "
-            "(scores may mix modes). Use --reset-state after changing backtest defaults.",
-            file=sys.stderr,
-        )
-        best_profit = None
-
-    cycle_kw = dict(
-        match_trades=args.match_trades,
-        no_auto_data=args.no_auto_data,
-        original_timestamps=args.original_timestamps,
-    )
+    best_profit, _ = _load_state()
 
     if best_profit is None and not args.no_baseline:
-        print("Establishing baseline profit from current algorithm.py ...")
-        _run_agent_cycle(args.round, **cycle_kw)
+        logger.info("Establishing baseline profit from current algorithm.py …")
+        _run_agent_cycle()
         best_profit = _latest_profit()
-        print(f"Baseline total_profit: {best_profit}")
+        logger.info("Baseline total_profit: {}", best_profit)
         shutil.copy2(algo_path, BEST_COPY)
-        _save_state(best_profit, 0, match_trades=args.match_trades)
+        _save_state(best_profit, 0)
 
     for i in range(1, args.iterations + 1):
-        print(f"\n=== iteration {i}/{args.iterations} ===")
+        logger.info("=== iteration {}/{} ===", i, args.iterations)
         try:
             current = algo_path.read_text(encoding="utf-8")
             new_code = _gemini_edit(current, model=model)
-        except Exception as e:
-            print(f"Gemini step failed: {e}", file=sys.stderr)
+        except Exception:
+            logger.exception("Gemini step failed")
             shutil.copy2(BEST_COPY, algo_path)
-            _save_state(best_profit, i, match_trades=args.match_trades)
+            _save_state(best_profit, i)
             time.sleep(args.sleep)
             continue
 
         algo_path.write_text(new_code, encoding="utf-8")
 
-        code = _run_agent_cycle(args.round, **cycle_kw)
+        code = _run_agent_cycle()
         if code != 0:
-            print("agent_cycle failed; restoring best algorithm", file=sys.stderr)
+            logger.error("agent_cycle failed; restoring best algorithm")
             shutil.copy2(BEST_COPY, algo_path)
-            _save_state(best_profit, i, match_trades=args.match_trades)
+            _save_state(best_profit, i)
             time.sleep(args.sleep)
             continue
 
         profit = _latest_profit()
-        print(f"total_profit this run: {profit}")
+        logger.info("total_profit this run: {}", profit)
 
         if profit is None:
-            print("Could not parse profit; restoring best", file=sys.stderr)
+            logger.error("Could not parse profit; restoring best")
             shutil.copy2(BEST_COPY, algo_path)
         elif best_profit is None or profit > best_profit:
             best_profit = profit
             shutil.copy2(algo_path, BEST_COPY)
-            print(f"new best: {best_profit}")
+            logger.info("new best: {}", best_profit)
         else:
-            print(f"not better than best {best_profit}; discarding")
+            logger.info("not better than best {}; discarding", best_profit)
             shutil.copy2(BEST_COPY, algo_path)
 
-        _save_state(best_profit, i, match_trades=args.match_trades)
+        _save_state(best_profit, i)
         time.sleep(args.sleep)
 
-    print("\nDone. Best profit:", best_profit)
-    print(f"Best-so-far code: {BEST_COPY}")
+    logger.info("Done. Best profit: {}", best_profit)
+    logger.info("Best-so-far code: {}", BEST_COPY)
     return 0
 
 
